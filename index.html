@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>IDORANAV — Навигация</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+html, body {
+  height: 100%; margin: 0; padding: 0;
+  background: #121212; color: #fff;
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+#map { width: 100%; height: 100%; }
+
+#controls {
+  position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+  background: rgba(20,20,20,0.95);
+  padding: 10px; border-radius: 12px;
+  display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;
+  z-index: 1000;
+  width: 95%; max-width: 420px;
+}
+#controls button, #controls input {
+  font-size: 14px; border-radius: 8px; border: none;
+}
+#controls button {
+  padding: 8px 10px; background: #1DB7DD; color: white;
+  flex: 1 1 45%;
+}
+#controls button:active { background: #1597b5; }
+
+#transportButtons { display: none; flex: 1 1 100%; gap: 5px; flex-wrap: wrap; }
+
+#searchBox { display: flex; flex: 1 1 100%; gap: 5px; }
+#searchInput { flex: 1; padding: 6px; border-radius: 6px; border: none; outline: none; }
+
+#results {
+  position: fixed; top: 70px; left: 50%; transform: translateX(-50%);
+  width: 90%; max-width: 400px;
+  background: rgba(25,25,25,0.95);
+  border-radius: 10px; padding: 5px; z-index: 1001;
+  display: none; max-height: 50vh; overflow-y: auto;
+}
+.result-item { padding: 8px; border-bottom: 1px solid #333; cursor: pointer; }
+.result-item:hover { background: rgba(255,255,255,0.1); }
+
+#routeOptions {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 400px;
+  width: 90%;
+  background: rgba(25,25,25,0.95);
+  border-radius: 10px;
+  padding: 10px;
+  color: #fff;
+  z-index: 1001;
+  display: none;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.route-item {
+  padding: 8px;
+  margin-bottom: 5px;
+  border-radius: 6px;
+  background: rgba(30,30,30,0.9);
+  cursor: pointer;
+}
+
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: #1DB7DD; color: white; padding: 10px 20px;
+  border-radius: 8px; font-size: 14px; opacity: 0;
+  transition: opacity .5s; z-index: 1000;
+}
+.toast.show { opacity: 1; }
+
+#permissionModal {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.8); display: none;
+  align-items: center; justify-content: center; z-index: 2000;
+}
+#permissionModal div {
+  background: #1e1e1e; padding: 20px; border-radius: 10px;
+  max-width: 320px; text-align: center;
+}
+#permissionModal button {
+  margin-top: 10px; background: #1DB7DD; color: white; border: none;
+  border-radius: 8px; padding: 8px 16px;
+}
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <button id="btnLocate">📍 Мое место</button>
+  <div id="searchBox">
+    <input type="text" id="searchInput" placeholder="Найти место...">
+    <button id="btnSearch">🔍</button>
+  </div>
+
+  <div id="transportButtons">
+    <button id="btnCar">🚗 Авто</button>
+    <button id="btnBike">🚲 Велосипед</button>
+    <button id="btnFoot">🚶 Пешком</button>
+    <button id="btnBus">🚌 Автобус</button>
+    <button id="btnMetro">🚇 Метро</button>
+  </div>
+
+  <button id="btnStart">▶ В путь</button>
+  <button id="btnClear">🗑 Очистить</button>
+</div>
+
+<div id="map"></div>
+<div id="results"></div>
+<div id="routeOptions"></div>
+<div class="toast" id="toast"></div>
+
+<!-- Модальное окно разрешения -->
+<div id="permissionModal">
+  <div>
+    <h3>Разрешить геолокацию</h3>
+    <p>Чтобы определить ваше местоположение, разрешите доступ в настройках браузера.</p>
+    <button id="btnRetry">Попробовать снова</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let map, userMarker, arrowIcon, watchId, routeLine, destinationMarker;
+let currentLocation = [41.3111, 69.2797]; // Ташкент по умолчанию
+let destination = null;
+let profile = "car";
+
+const routeOptionsDiv = document.getElementById("routeOptions");
+let transportRoutes = [];
+
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(()=>t.classList.remove("show"),3000);
+}
+
+function initMap() {
+  map = L.map("map").setView(currentLocation, 13);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: "© OpenStreetMap"
+  }).addTo(map);
+
+  arrowIcon = L.divIcon({
+    className: "arrow-icon",
+    html: `<div style="transform: rotate(0deg); width:0; height:0; border-left:8px solid transparent; border-right:8px solid transparent; border-bottom:14px solid #1DB7DD;"></div>`,
+    iconSize: [20, 20],
+    iconAnchor: [10, 10]
+  });
+
+  userMarker = L.marker(currentLocation, { icon: arrowIcon }).addTo(map);
+
+  map.on("click", e => {
+    const dest = [e.latlng.lat, e.latlng.lng];
+    setDestination(dest, "Выбранная точка");
+  });
+}
+
+function requestLocationPermission() {
+  if (!navigator.permissions) { locateUser(); return; }
+  navigator.permissions.query({ name: 'geolocation' }).then(res => {
+    if (res.state === "granted" || res.state === "prompt") locateUser();
+    else document.getElementById("permissionModal").style.display = "flex";
+  });
+}
+
+function locateUser() {
+  if (!navigator.geolocation) { showToast("Геолокация не поддерживается"); initMap(); return; }
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      currentLocation = [pos.coords.latitude, pos.coords.longitude];
+      if (!map) initMap();
+      userMarker.setLatLng(currentLocation);
+      map.setView(currentLocation, 15);
+      showToast("Местоположение определено");
+    },
+    err => { console.warn("Ошибка геолокации:", err); document.getElementById("permissionModal").style.display = "flex"; if(!map) initMap(); },
+    { enableHighAccuracy: true, timeout: 7000 }
+  );
+}
+
+function setDestination(dest, name) {
+  if (destinationMarker) map.removeLayer(destinationMarker);
+  destinationMarker = L.marker(dest, { title: name }).addTo(map);
+  destination = dest;
+  document.getElementById("transportButtons").style.display = "flex";
+  buildRoute(currentLocation, dest);
+}
+
+async function searchPlace() {
+  const q = document.getElementById("searchInput").value.trim();
+  const box = document.getElementById("results");
+  if (!q) return showToast("Введите адрес или место");
+  box.innerHTML = "<div class='result-item'>Поиск...</div>";
+  box.style.display = "block";
+
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&addressdetails=1&limit=10`);
+  const data = await res.json();
+  if (!data.length) { box.innerHTML = "<div class='result-item'>Ничего не найдено</div>"; return; }
+
+  box.innerHTML = data.map((p,i)=>`
+    <div class='result-item' data-i='${i}'>
+      <b>${p.display_name.split(",")[0]}</b><br><small>${p.display_name}</small>
+    </div>`).join("");
+
+  document.querySelectorAll(".result-item").forEach(el=>{
+    el.onclick = ()=>{
+      const p = data[el.dataset.i];
+      const dest = [parseFloat(p.lat), parseFloat(p.lon)];
+      box.style.display="none";
+      setDestination(dest, p.display_name);
+    };
+  });
+}
+
+function buildRoute(start, end) {
+  if(!end) return;
+  const url = `https://router.project-osrm.org/route/v1/${profile}/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson`;
+  fetch(url).then(r=>r.json()).then(data=>{
+    if (!data.routes?.length) { showToast("Маршрут не найден"); return; }
+    const r = data.routes[0];
+    const coords = r.geometry.coordinates.map(p=>[p[1],p[0]]);
+    if (routeLine) map.removeLayer(routeLine);
+    routeLine = L.polyline(coords, { color:"#1DB7DD", weight:5 }).addTo(map);
+    map.fitBounds(routeLine.getBounds());
+
+    const dist = (r.distance/1000).toFixed(1);
+    const time = Math.round(r.duration/60);
+    showToast(`Расстояние: ${dist} км • Время: ${time} мин`);
+  }).catch(()=>showToast("Ошибка маршрута"));
+}
+
+function startNavigation() {
+  if (!destination) return showToast("Сначала выберите место");
+  if (watchId) { navigator.geolocation.clearWatch(watchId); watchId=null; showToast("Навигация остановлена"); return; }
+
+  showToast("Навигация запущена...");
+  watchId = navigator.geolocation.watchPosition(
+    pos => {
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+      const heading = pos.coords.heading || 0;
+      currentLocation = [lat, lon];
+      userMarker.setLatLng(currentLocation);
+      const arrow = userMarker.getElement().querySelector("div");
+      if (arrow) arrow.style.transform = `rotate(${heading}deg)`;
+      map.panTo(currentLocation, { animate: true });
+
+      const dist = map.distance(currentLocation, destination);
+      if (dist < 20) {
+        showToast("Вы прибыли!");
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+    },
+    err => showToast("Ошибка при отслеживании"),
+    { enableHighAccuracy: true, maximumAge:0, timeout:5000 }
+  );
+}
+
+// ===== Автобусные маршруты =====
+function clearTransportRoutes() {
+  transportRoutes.forEach(r => map.removeLayer(r.line));
+  transportRoutes = [];
+  routeOptionsDiv.innerHTML = "";
+  routeOptionsDiv.style.display = "none";
+}
+
+function showTransportOptions(type) {
+  if (!destination) return showToast("Сначала выберите пункт назначения");
+  clearTransportRoutes();
+  let distance = map.distance(currentLocation, destination)/1000;
+  let routes = [];
+
+  if(type==="bus"){
+    profile="car";
+    buildRoute(currentLocation,destination);
+    if(distance<5) routes=["🚌 №24 — без пересадок (≈15 мин)"];
+    else if(distance<15) routes=["🚌 №17 → №44 (≈40 мин)", "🚌 Альтернативный №21"];
+    else routes=["🚌 №12 (экспресс) — конечная (≈1ч10м)", "🚌 №18 через центр"];
+  } else if(type==="metro"){
+    profile="foot";
+    buildRoute(currentLocation,destination);
+    if(distance<5) routes=["🚇 Линия 1: 'Беруний' → 'Хамид Олимжон'"];
+    else if(distance<15) routes=["🚇 Линия 1 + пересадка на Линию 2"];
+    else routes=["🚇 Линия 1 до 'Пушкина' → автобус №44"];
+  }
+
+  const colors=["#1DB7DD","#FFAA00","#DD4444","#44DD44"];
+  routeOptionsDiv.innerHTML = routes.map((r,i)=>`<div class="route-item" data-i="${i}">${r}</div>`).join("");
+  routeOptionsDiv.style.display="block";
+
+  routes.forEach((r,i)=>{
+    const offset=(i-Math.floor(routes.length/2))*0.0005;
+    const coords=[[currentLocation[0]+offset,currentLocation[1]+offset],[destination[0]+offset,destination[1]+offset]];
+    const line=L.polyline(coords,{color:colors[i%colors.length],weight:5,dashArray:"5,10"}).addTo(map);
+    transportRoutes.push({name:r,line});
+  });
+
+  document.querySelectorAll(".route-item").forEach(el=>{
+    el.onclick=()=>{
+      transportRoutes.forEach((r,i)=>{
+        r.line.setStyle({color:r.name===el.textContent?"#00FFAA":colors[i%colors.length],weight:r.name===el.textContent?7:5});
+      });
+    };
+  });
+}
+
+// ===== События кнопок =====
+document.getElementById("btnLocate").onclick = requestLocationPermission;
+document.getElementById("btnSearch").onclick = searchPlace;
+document.getElementById("btnCar").onclick = ()=>{ profile="car"; buildRoute(currentLocation,destination); showToast("🚗 Маршрут для авто"); };
+document.getElementById("btnBike").onclick = ()=>{ profile="bike"; buildRoute(currentLocation,destination); showToast("🚲 Маршрут для велосипеда"); };
+document.getElementById("btnFoot").onclick = ()=>{ profile="foot"; buildRoute(currentLocation,destination); showToast("🚶 Пеший маршрут"); };
+document.getElementById("btnBus").onclick = ()=>showTransportOptions("bus");
+document.getElementById("btnMetro").onclick = ()=>showTransportOptions("metro");
+document.getElementById("btnClear").onclick = ()=>{
+  if(routeLine) map.removeLayer(routeLine);
+  if(destinationMarker) map.removeLayer(destinationMarker);
+  clearTransportRoutes();
+  destination=null;
+  document.getElementById("transportButtons").style.display="none";
+  showToast("Очищено");
+};
+document.getElementById("btnStart").onclick=startNavigation;
+document.getElementById("btnRetry").onclick=()=>{ document.getElementById("permissionModal").style.display="none"; requestLocationPermission(); };
+
+initMap();
+</script>
+</body>
+</html>
